@@ -1,0 +1,7 @@
+{
+    admin off
+}
+{$LC_DOMAIN} {
+    encode gzip
+    reverse_proxy control:8080
+}

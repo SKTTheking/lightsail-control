@@ -1,0 +1,7 @@
+.env
+data/
+.build/
+__pycache__/
+*.pyc
+lightsail-control
+

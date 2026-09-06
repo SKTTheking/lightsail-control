@@ -1,0 +1,40 @@
+services:
+  control:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      LC_PUBLIC_URL: https://${LC_DOMAIN:?Run scripts/setup.sh first}
+      LC_LISTEN: 0.0.0.0:8080
+      LC_ADMIN_USER: admin
+      LC_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets: [admin_password]
+    volumes:
+      - ./data/control:/app/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    environment:
+      LC_DOMAIN: ${LC_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    depends_on: [control]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+secrets:
+  admin_password:
+    file: ./data/secrets/admin_password
