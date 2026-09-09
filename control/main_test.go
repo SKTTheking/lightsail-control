@@ -71,6 +71,57 @@ func fixtureNode(t *testing.T, credential string) Node {
 	return n
 }
 
+func TestDeleteNodeInvalidatesCredentialsAndKeepsHistory(t *testing.T) {
+	adminSession(t)
+	n := fixtureNode(t, "delete-agent")
+	other := fixtureNode(t, "keep-agent")
+	testApp.DB.Model(&n).Updates(map[string]any{"enroll_hash": digest("delete-enrollment"), "enroll_expires": time.Now().Unix() + 900})
+	j := Job{ID: uuid.NewString(), NodeID: n.ID, State: "running", Logs: "preserved"}
+	if err := testApp.DB.Create(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/nodes/" + n.ID + "/delete"
+	for _, tc := range []struct {
+		admin, csrf bool
+		code        int
+	}{{false, false, 401}, {true, false, 403}, {true, true, 200}} {
+		if w := request("POST", path, map[string]any{}, "", tc.admin, tc.csrf); w.Code != tc.code {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	var count int64
+	testApp.DB.Model(&Node{}).Where("id = ?", n.ID).Count(&count)
+	if count != 0 {
+		t.Fatal("node still exists")
+	}
+	testApp.DB.Model(&models.Client{}).Where("uuid = ?", n.ID).Count(&count)
+	if count != 0 {
+		t.Fatal("Komari client still exists")
+	}
+	if err := testApp.DB.First(&j, "id = ?", j.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if j.State != "revoked" || !j.Cancel || j.Logs != "preserved" {
+		t.Fatal(j)
+	}
+	if w := request("POST", "/agent/poll", map[string]any{}, "delete-agent", false, false); w.Code != 401 {
+		t.Fatal("deleted agent accepted")
+	}
+	if w := request("POST", "/enroll", nil, "delete-enrollment", false, false); w.Code != 401 {
+		t.Fatal("deleted enrollment accepted")
+	}
+	if w := request("POST", path, map[string]any{}, "", true, true); w.Code != 404 {
+		t.Fatal("missing node accepted")
+	}
+	if err := testApp.DB.First(&Node{}, "id = ?", other.ID).Error; err != nil {
+		t.Fatal("other node affected", err)
+	}
+	testApp.DB.Model(&Audit{}).Where("action = ? AND target = ?", "node_deleted", n.ID+":"+n.Name).Count(&count)
+	if count != 1 {
+		t.Fatal("missing deletion audit")
+	}
+}
+
 func TestAuthenticationAndCSRF(t *testing.T) {
 	adminSession(t)
 	for _, path := range []string{"/api/nodes", "/api/jobs", "/api/audit"} {

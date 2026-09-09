@@ -241,6 +241,7 @@ func (a *App) router() *gin.Engine {
 	g.POST("/nodes", a.addNode)
 	g.POST("/nodes/:id/enrollment", a.enrollment)
 	g.POST("/nodes/:id/revoke", a.revoke)
+	g.POST("/nodes/:id/delete", a.deleteNode)
 	g.POST("/nodes/:id/quota", a.quota)
 	g.GET("/jobs", func(c *gin.Context) {
 		a.expireJobs()
@@ -378,6 +379,36 @@ func (a *App) revoke(c *gin.Context) {
 	}
 	a.DB.Model(&Job{}).Where("node_id = ? AND state IN ?", c.Param("id"), []string{"queued", "claimed", "running"}).Updates(map[string]any{"state": "revoked", "cancel": true, "finished": time.Now().Unix()})
 	a.audit("node_revoked", c.Param("id"))
+	c.JSON(200, gin.H{"ok": true})
+}
+func (a *App) deleteNode(c *gin.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	id := c.Param("id")
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var n Node
+		if err := tx.First(&n, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&Job{}).Where("node_id = ? AND state IN ?", id, []string{"queued", "claimed", "running"}).Updates(map[string]any{"state": "revoked", "cancel": true, "finished": time.Now().Unix(), "step": "服务器已从控制中心删除"}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("uuid = ?", id).Delete(&models.Client{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&n).Error; err != nil {
+			return err
+		}
+		return tx.Create(&Audit{At: time.Now().Unix(), Action: "node_deleted", Target: id + ":" + n.Name}).Error
+	})
+	if err == gorm.ErrRecordNotFound {
+		fail(c, 404, "服务器不存在")
+		return
+	}
+	if err != nil {
+		fail(c, 500, "删除失败，请重试")
+		return
+	}
 	c.JSON(200, gin.H{"ok": true})
 }
 func (a *App) quota(c *gin.Context) {
